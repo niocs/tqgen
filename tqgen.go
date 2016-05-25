@@ -1,11 +1,14 @@
 package main
 
 import (
-	"fmt"
-	"math/rand"
 	"github.com/niocs/sflag"
 	"github.com/niocs/nrand"
+	"math/rand"
+	"strings"
 	"time"
+	"log"
+	"fmt"
+	"os"
 )
 
 type Stock struct {
@@ -33,18 +36,19 @@ type Exch struct {
 	DateTimeEOD      time.Time
 	SOD              time.Duration  // time duration from midnight to SOD
 	EOD              time.Duration  // time duration from midnight to EOD
-	Stocks           []Stock
+	Stocks           []*Stock
 	TotalLiquidity   float64
 }
 
 var opt = struct {
-	Usage    string  "Prints usage string"
-	NumStk   int     "Number of stocks | 10"
-	Seed     int64   "Randomization seed. Picked at random if not specified | 1"
-	DateBeg  string  "Date in YYYYMMDD format | 20150101"
-	DateEnd  string  "Date in YYYYMMDD format | 20150103"
-	StartTm  string  "Trading start time | 0930"
-	EndTm    string  "Trading end time | 1600"
+	Usage       string  "Prints usage string"
+	NumStk      int     "Number of stocks | 10"
+	Seed        int64   "Randomization seed. Picked at random if not specified | 1"
+	DateBeg     string  "Date in YYYYMMDD format | 20150101"
+	DateEnd     string  "Date in YYYYMMDD format | 20150103"
+	StartTm     string  "Trading start time | 0930"
+	EndTm       string  "Trading end time | 1600"
+	OutFilePat  string  "outfile name pattern with YYYYMMDD that will be replaced by date"
 }{}
 
 func GenName() string {
@@ -70,8 +74,8 @@ func GenNames(n int) []string {
 	return names
 }
 
-func GenStocks(names []string, seed int64) ([]Stock, float64) {
-	stocks := make([]Stock, 0, len(names))
+func GenStocks(names []string, seed int64) ([]*Stock, float64) {
+	stocks := make([]*Stock, 0, len(names))
 	nrLiq  := nrand.New(rand.Int63())
 	nrLiq.SetRange(0.0, 1.0)
 	nrBPx  := nrand.New(rand.Int63())
@@ -80,7 +84,7 @@ func GenStocks(names []string, seed int64) ([]Stock, float64) {
 	for _, name := range names {
 		liq := nrLiq.NormFloat64()
 		bpx := nrBPx.NormFloat64()
-		stocks = append(stocks, Stock{
+		stocks = append(stocks, &Stock{
 			Name      :name,
 			Liquidity :liq,
 			BasePx    :bpx,
@@ -91,7 +95,7 @@ func GenStocks(names []string, seed int64) ([]Stock, float64) {
 	return stocks, totalLiq
 }
 
-func SetupExch(stocks []Stock, totalLiq float64) *Exch {
+func SetupExch(stocks []*Stock, totalLiq float64) *Exch {
 	datebeg, err := time.Parse("20060102", opt.DateBeg)
 	if err != nil {
 		panic(err)
@@ -114,33 +118,36 @@ func SetupExch(stocks []Stock, totalLiq float64) *Exch {
 	sduration := time.Duration(shour)*time.Hour + time.Duration(sminute)*time.Minute + time.Duration(ssecond)*time.Second
 	eduration := time.Duration(ehour)*time.Hour + time.Duration(eminute)*time.Minute + time.Duration(esecond)*time.Second
 
-	datenow := datebeg
+	datenow     := datebeg
 	datetimenow := datenow.Add(sduration)
 	datetimeeod := datenow.Add(eduration)
 
 	return &Exch{
-		DateBeg		    : datebeg,
-		DateEnd		    : dateend,
-		DateNow		    : datenow,
-		DateTimeNow	    : datetimenow,
-		DateTimeEOD	    : datetimeeod,
-		SOD		        : sduration,
-		EOD		        : eduration,
+		DateBeg		: datebeg,
+		DateEnd		: dateend,
+		DateNow		: datenow,
+		DateTimeNow	: datetimenow,
+		DateTimeEOD	: datetimeeod,
+		SOD		: sduration,
+		EOD		: eduration,
 		Stocks          : stocks,
 		TotalLiquidity  : totalLiq}
 }
 
-func (exch *Exch) GetNextTickTime() (time.Time, bool) {  // bool -> true if next tick, false if no more ticks
+func (exch *Exch) GetNextTickTime() (t time.Time, newDate bool, done bool) {
+	newDate = false
+	done    = false
 	exch.DateTimeNow = exch.DateTimeNow.Add(time.Duration(rand.Intn(25))*time.Millisecond)
 	if exch.DateTimeNow.After(exch.DateTimeEOD) {
 		exch.DateNow = exch.DateNow.Add(24*time.Hour)
 		exch.DateTimeNow = exch.DateNow.Add(exch.SOD)
 		exch.DateTimeEOD = exch.DateNow.Add(exch.EOD)
+		newDate = true
 	}
 	if exch.DateNow.After(exch.DateEnd) {
-		return exch.DateTimeNow, false
+		done = true
 	}
-	return exch.DateTimeNow, true
+	return exch.DateTimeNow, newDate, done
 }
 
 func (exch *Exch) GetNextStock() *Stock {
@@ -153,7 +160,7 @@ func (exch *Exch) GetNextStock() *Stock {
 		if p <= 0.0 { break }
 		ii ++
 	}
-	return &exch.Stocks[ii]
+	return exch.Stocks[ii]
 }
 
 func (stock *Stock) GenNextTradeQuote(ticktime time.Time) {
@@ -182,6 +189,15 @@ func (stock *Stock) GenNextTradeQuote(ticktime time.Time) {
 	}
 }
 
+func InitNewDayFile(t time.Time, outfilepat string) (*os.File) {
+	fn := strings.Replace(outfilepat, "YYYYMMDD", t.Format("20060102"), -1)
+	of, err := os.OpenFile(fn,os.O_WRONLY | os.O_CREATE, 0755)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return of
+}
+
 func main() {
 	sflag.Parse(&opt)
 	rand.Seed(opt.Seed)
@@ -189,16 +205,23 @@ func main() {
 	
 	exch := SetupExch(GenStocks(names, opt.Seed))
 
-	fmt.Printf("date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
-	ticktime, goodtick := exch.GetNextTickTime()
-	for goodtick == true {
+	ticktime, newDate, done := exch.GetNextTickTime()
+	fp := InitNewDayFile(ticktime, opt.OutFilePat)
+	fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
+	for !done {
 		stock := exch.GetNextStock()
 		stock.GenNextTradeQuote(ticktime)
 		if stock.LastType == "t" {
-			fmt.Printf("%s,%s,%s,,,,,,%f,%d,%s\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastTrdPx, stock.LastTrdSz, stock.LastTrdTm.Format("150405.000"))
+			fmt.Fprintf(fp,"%s,%s,%s,,,,,,%f,%d,%s\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastTrdPx, stock.LastTrdSz, stock.LastTrdTm.Format("150405.000"))
 		} else {
-			fmt.Printf("%s,%s,%s,%f,%d,%f,%d,%s,,,\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastBidPx, stock.LastBidSz, stock.LastAskPx, stock.LastAskSz, stock.LastQuoteTm.Format("150405.000"))
+			fmt.Fprintf(fp,"%s,%s,%s,%f,%d,%f,%d,%s,,,\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastBidPx, stock.LastBidSz, stock.LastAskPx, stock.LastAskSz, stock.LastQuoteTm.Format("150405.000"))
 		}
-		ticktime, goodtick = exch.GetNextTickTime()
+		ticktime, newDate, done = exch.GetNextTickTime()
+		if newDate {
+			fp.Close()
+			for _, ii := range(exch.Stocks) { ii.Started = false }
+			fp = InitNewDayFile(ticktime, opt.OutFilePat)
+			fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
+		}
 	}
 }

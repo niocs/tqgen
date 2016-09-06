@@ -4,6 +4,7 @@ A configurable repeatable simulated trade/quote generator for testing databases.
 ## build
 `$ go build tqgen.go`
 ## usage
+(check this [blog post](https://sahas.ra.naman.ms/2016/06/08/tqgen-a-program-for-generating-fake-tradequote-data/) for detailed usage information)
 ```
 $ tqgen --OutFilePat <output_file_pattern> \
         [--NumStk <number_of_randomly_generated_stocks>] \

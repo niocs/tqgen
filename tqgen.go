@@ -64,12 +64,13 @@ func GenNames(n int) []string {
 	// use a map to keep the list unique
 	
 	nameMap  := make(map[string]struct{})
+	var names []string
 	for len(nameMap) < opt.NumStk {
-		nameMap[GenName()] = struct{}{}
-	}
-	names := make([]string, 0, len(nameMap))
-	for name := range nameMap {
-		names = append(names, name)
+		name := GenName()
+		if _, ok := nameMap[name]; !ok {
+			nameMap[name] = struct{}{}
+			names = append(names, name)
+		}
 	}
 	return names
 }
@@ -150,17 +151,19 @@ func (exch *Exch) GetNextTickTime() (t time.Time, newDate bool, done bool) {
 	return exch.DateTimeNow, newDate, done
 }
 
-func (exch *Exch) GetNextStock() *Stock {
+func (exch *Exch) GetNextStock(stock chan<- *Stock) {
 	nr := nrand.New(rand.Int63())
 	nr.SetRange(0.0, 1.0)
-	p  := nr.NormFloat64() * exch.TotalLiquidity
-	ii := 0
 	for {
-		p -= exch.Stocks[ii].Liquidity
-		if p <= 0.0 { break }
-		ii ++
+		p  := nr.NormFloat64() * exch.TotalLiquidity
+		ii := 0
+		for {
+			p -= exch.Stocks[ii].Liquidity
+			if p <= 0.0 { break }
+			ii ++
+		}
+		stock <- exch.Stocks[ii]
 	}
-	return exch.Stocks[ii]
 }
 
 func (stock *Stock) GenNextTradeQuote(ticktime time.Time) {
@@ -204,12 +207,15 @@ func main() {
 	names := GenNames(opt.NumStk)
 	
 	exch := SetupExch(GenStocks(names, opt.Seed))
+	var nextStockChan = make(chan *Stock,500)
 
 	ticktime, newDate, done := exch.GetNextTickTime()
 	fp := InitNewDayFile(ticktime, opt.OutFilePat)
 	fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
+
+	go exch.GetNextStock(nextStockChan)
 	for !done {
-		stock := exch.GetNextStock()
+		stock := <-nextStockChan
 		stock.GenNextTradeQuote(ticktime)
 		if stock.LastType == "t" {
 			fmt.Fprintf(fp,"%s,%s,%s,,,,,,%f,%d,%s\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastTrdPx, stock.LastTrdSz, stock.LastTrdTm.Format("150405.000"))
@@ -218,10 +224,12 @@ func main() {
 		}
 		ticktime, newDate, done = exch.GetNextTickTime()
 		if newDate {
-			fp.Close()
 			for _, ii := range(exch.Stocks) { ii.Started = false }
-			fp = InitNewDayFile(ticktime, opt.OutFilePat)
-			fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
+			if strings.Index(opt.OutFilePat, "YYYYMMDD") >= 0 {
+				fp.Close()
+				fp = InitNewDayFile(ticktime, opt.OutFilePat)
+				fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
+			}
 		}
 	}
 }

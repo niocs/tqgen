@@ -42,8 +42,9 @@ type Exch struct {
 
 var opt = struct {
 	Usage       string  "Prints usage string"
-	NumStk      int     "Number of stocks | 10"
-	Seed        int64   "Randomization seed. Picked at random if not specified | 1"
+	NumStk      int     "Number of stocks | 100"
+	Seed        int64   "Randomization seed. Default is 1 | 1"
+	Interval    int     "Max milliseconds between two entries.  Decreasing this increases number of lines per date. Default is 25. | 25"
 	DateBeg     string  "Date in YYYYMMDD format | 20150101"
 	DateEnd     string  "Date in YYYYMMDD format | 20150103"
 	StartTm     string  "Trading start time | 0930"
@@ -135,10 +136,10 @@ func SetupExch(stocks []*Stock, totalLiq float64) *Exch {
 		TotalLiquidity  : totalLiq}
 }
 
-func (exch *Exch) GetNextTickTime() (t time.Time, newDate bool, done bool) {
+func (exch *Exch) GetNextTickTime() (t *time.Time, newDate bool, done bool) {
 	newDate = false
 	done    = false
-	exch.DateTimeNow = exch.DateTimeNow.Add(time.Duration(rand.Intn(25))*time.Millisecond)
+	exch.DateTimeNow = exch.DateTimeNow.Add(time.Duration(rand.Intn(opt.Interval))*time.Millisecond)
 	if exch.DateTimeNow.After(exch.DateTimeEOD) {
 		exch.DateNow = exch.DateNow.Add(24*time.Hour)
 		exch.DateTimeNow = exch.DateNow.Add(exch.SOD)
@@ -148,7 +149,7 @@ func (exch *Exch) GetNextTickTime() (t time.Time, newDate bool, done bool) {
 	if exch.DateNow.After(exch.DateEnd) {
 		done = true
 	}
-	return exch.DateTimeNow, newDate, done
+	return &exch.DateTimeNow, newDate, done
 }
 
 func (exch *Exch) GetNextStock(stock chan<- *Stock) {
@@ -166,33 +167,31 @@ func (exch *Exch) GetNextStock(stock chan<- *Stock) {
 	}
 }
 
-func (stock *Stock) GenNextTradeQuote(ticktime time.Time) {
+func (stock *Stock) GenNextTradeQuote(nr *nrand.Nrand, ticktime *time.Time) {
 	if stock.Started && rand.Int31n(20) > 17 {           // new trade
 		stock.LastType = "t"
-		nr := nrand.New(rand.Int63())                 // TODO: this can be slow. improve later
 		nr.SetRange(stock.LastBidPx, stock.LastAskPx)
 		stock.LastTrdPx = nr.NormFloat64()
 		stock.LastTrdSz = (1 + rand.Int63n(50)) * 100
-		stock.LastTrdTm = ticktime
+		stock.LastTrdTm = *ticktime
 		stock.LastArrTm = ticktime.Add(time.Duration(rand.Int31n(5)+5)*time.Millisecond)
 	} else {                                              // new quote
 		stock.LastType = "q"
 		
 		absSpread := (1.0 - stock.Liquidity + .01) * stock.LastTrdPx / 100
-		nr := nrand.New(rand.Int63())
 		nr.SetRange(stock.LastTrdPx - absSpread, stock.LastTrdPx)
 		stock.LastBidPx = nr.NormFloat64()
 		nr.SetRange(stock.LastTrdPx, stock.LastTrdPx + absSpread)
 		stock.LastAskPx = nr.NormFloat64()
 		stock.LastBidSz = (1 + rand.Int63n(50)) * 100
 		stock.LastAskSz = (1 + rand.Int63n(50)) * 100
-		stock.LastQuoteTm = ticktime
+		stock.LastQuoteTm = *ticktime
 		stock.LastArrTm = ticktime.Add(time.Duration(rand.Int31n(5)+5)*time.Millisecond)
 		stock.Started = true
 	}
 }
 
-func InitNewDayFile(t time.Time, outfilepat string) (*os.File) {
+func InitNewDayFile(t *time.Time, outfilepat string) (*os.File) {
 	fn := strings.Replace(outfilepat, "YYYYMMDD", t.Format("20060102"), -1)
 	of, err := os.OpenFile(fn,os.O_WRONLY | os.O_CREATE, 0755)
 	if err != nil {
@@ -214,9 +213,10 @@ func main() {
 	fmt.Fprintf(fp,"date,arrTm,ticker,type,bidPx,bidSz,askPx,askSz,quotTm,trdPx,trdSz,trdTm\n")
 
 	go exch.GetNextStock(nextStockChan)
+	nr := nrand.New(rand.Int63())
 	for !done {
 		stock := <-nextStockChan
-		stock.GenNextTradeQuote(ticktime)
+		stock.GenNextTradeQuote(nr, ticktime)
 		if stock.LastType == "t" {
 			fmt.Fprintf(fp,"%s,%s,%s,,,,,,%f,%d,%s\n",stock.LastArrTm.Format("20060102,150405.000"),stock.Name, stock.LastType, stock.LastTrdPx, stock.LastTrdSz, stock.LastTrdTm.Format("150405.000"))
 		} else {
